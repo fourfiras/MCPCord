@@ -128,12 +128,19 @@ def normalize_message(raw, channel, exported_at, source_hash):
     if type(pinned) is not bool:
         raise ReaderError("isPinned must be boolean.")
     attachments = []
-    for attachment in bounded_list(raw.get("attachments", []), 100):
+    for index, attachment in enumerate(bounded_list(raw.get("attachments", []), 100)):
         attachment = obj(attachment)
-        attachments.append({
+        item = {
+            "index": index,
             "filename": text_field(attachment.get("fileName"), 1024),
             "size_bytes": integer(attachment.get("fileSizeBytes", 0), 0, 2**63 - 1),
-        })
+        }
+        if attachment.get("contentType") is not None:
+            item["content_type"] = text_field(attachment["contentType"], 256)
+        for key in ("width", "height"):
+            if type(attachment.get(key)) is int:
+                item[key] = attachment[key]
+        attachments.append(item)
     embeds = []
     for embed in bounded_list(raw.get("embeds", []), 100):
         embed = obj(embed)
@@ -142,9 +149,14 @@ def normalize_message(raw, channel, exported_at, source_hash):
             field = obj(field)
             fields.append({"name": text_field(field.get("name", "")),
                            "value": text_field(field.get("value", ""))})
-        embeds.append({"title": text_field(embed.get("title", "")),
-                       "description": text_field(embed.get("description", "")),
-                       "fields": fields})
+        normalized = {"title": text_field(embed.get("title", "") or ""),
+                      "description": text_field(embed.get("description", "") or ""),
+                      "fields": fields}
+        images = [key for key in ("image", "thumbnail")
+                  if isinstance(embed.get(key), dict) and embed[key].get("proxy_url")]
+        if images:
+            normalized["images"] = images
+        embeds.append(normalized)
     reference = None
     if raw.get("reference") is not None:
         ref = obj(raw["reference"])
@@ -166,7 +178,7 @@ def normalize_message(raw, channel, exported_at, source_hash):
         "forwarded_content": forwarded, "is_pinned": pinned,
         "source_url": f"https://discord.com/channels/{channel['guild_id']}/{channel['id']}/{mid}",
         "source_export_sha256": source_hash, "observed_at": exported_at,
-        "limitations": "Attachment bodies/URLs, reactions, stickers, and other rich media are not indexed.",
+        "limitations": "Attachment and embed-image bodies are not inlined; read them with read_attachment (index counts attachments, then embed images). Reactions and stickers are not indexed.",
     }
     message["author_kind"] = "webhook" if raw.get("webhookId") else ("bot" if author.get("isBot") else "user")
     message["mention_ids"] = sorted({snowflake(obj(m).get("id")) for m in bounded_list(raw.get("mentions", []), 1000)}, key=int)
@@ -340,6 +352,8 @@ class ExportIndex:
             previews[-1].update({"author": m["author"], "content": m["content"][:1000],
                                  "content_truncated": len(m["content"]) > 1000,
                                  "attachment_count": len(m["attachments"]), "embed_count": len(m["embeds"]),
+                                 "attachments": [{k: a[k] for k in ("index", "filename", "content_type", "size_bytes") if k in a}
+                                                 for a in m["attachments"]],
                                  "has_forward": m["forwarded_content"] is not None})
         return {"filters": filters, "total_matching": len(rows), "messages": previews,
                 "next_cursor": next_cursor, "more_messages": next_cursor is not None}

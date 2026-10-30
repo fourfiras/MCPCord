@@ -140,7 +140,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_discovery_tools_distinguish_local_job_mutations(self):
         server = Server(self.reader)
         local_mutations = {"start_history_import", "continue_history_import", "cancel_history_import"}
-        self.assertEqual(len(server.tools), 15)
+        self.assertEqual(len(server.tools), 16)
         for spec in server.tools:
             self.assertEqual(spec["annotations"]["readOnlyHint"], spec["name"] not in local_mutations)
         self.assertFalse(any(t["annotations"]["destructiveHint"] for t in server.tools))

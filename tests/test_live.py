@@ -271,10 +271,16 @@ class BackendTests(unittest.TestCase):
     def test_scope_invalid_window_and_future_rejected_before_network(self):
         backend, client = self.backend([])
         for ids, start, end in ((["999"], SINCE, UNTIL), ([CID], "2014-01-01T00:00:00Z", UNTIL),
-                                ([CID], SINCE, "2026-10-11T00:00:00Z"), ([CID], UNTIL, SINCE)):
+                                ([CID], UNTIL, SINCE), ([CID], "2026-10-12T00:00:00Z", "2026-10-13T00:00:00Z")):
             with self.subTest(ids=ids, start=start), self.assertRaises(ReaderError):
                 backend.read_messages(ids, start, end)
         client.messages.assert_not_called()
+
+    def test_future_until_is_read_as_now(self):
+        backend, client = self.backend([[message(12)], []])
+        result = backend.read_messages([CID], SINCE, "2026-10-11T00:00:00Z")
+        self.assertFalse(result["is_error"])
+        self.assertEqual(result["data"]["freshness"]["requested_window"]["until"], "2026-10-10T08:00:00.000000Z")
 
     def test_old_and_decade_wide_windows_work_with_legacy_date_cap_configuration(self):
         old = {**message(), "id": str(int(boundary_id("2016-01-01T12:00:00Z")) + 1),
@@ -331,7 +337,7 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(result["structuredContent"]["is_error"])
         self.assertTrue(all(t["annotations"]["readOnlyHint"] for t in server.tools))
         self.assertTrue(next(t for t in server.tools if t["name"] == "read_messages")["annotations"]["openWorldHint"])
-        self.assertEqual(len(server.tools), 4)
+        self.assertEqual(len(server.tools), 5)
 
     def test_cli_scope_validation_is_credential_free_and_live_requires_flags(self):
         base = [sys.executable, "-B", "-m", "mcpcord"]

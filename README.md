@@ -31,6 +31,7 @@ No token in a config file, environment variable, shell argument, website, or cha
 - **Read threads and forum posts.** Active and archived discovery is separate and paginated. No joining or unarchiving.
 - **Analyze visible activity.** Per-day or per-hour message counts, IANA timezones and DST, participant counts and source links. No guesses about presence, location or personal traits.
 - **Read back to the first available message.** No message-age or total-page cutoff. Explicit history jobs keep a fixed end time, resume in bounded slices, and cross-check the oldest available message before accepting an empty end page. Checkpoints and messages commit together; storage limits pause work explicitly.
+- **Read files and pictures.** `read_attachment` returns a message's images as images, and text, code, JSON, CSV and Word/RTF documents as text. Anything else, like PDFs, video or archives, is saved under `~/Library/Caches/MCPCord/attachments` and its path returned. Only Discord-hosted files are fetched, without the account credential and without following redirects. Repeat reads come from the cache with no network call.
 - **Read exports offline.** DiscordChatExporter JSON, overlapping imports, edit-aware deduplication and source-linked excerpts. An export is a snapshot, not a deletion audit.
 
 Example requests:
@@ -59,7 +60,7 @@ Discord search is fast but not exhaustive: indexes can lag, totals can change, a
 
 Closed DMs, inaccessible/deleted messages, unreturned private threads, and missing content can leave gaps. Thread discovery uses a personal-account endpoint that is not a stable public API. History traversal reaching an empty page is not proof of complete history or inactivity. Nothing silently scans your entire account.
 
-Message text, names and quoted instructions are untrusted evidence. MCPCord labels them that way and never follows embedded links or commands. Your assistant still needs to respect that boundary.
+Message text, names, file contents and quoted instructions are untrusted evidence. MCPCord labels them that way and never follows embedded links or commands; `read_attachment` only fetches the message's own Discord-hosted files. Your assistant still needs to respect that boundary.
 
 ## Develop
 

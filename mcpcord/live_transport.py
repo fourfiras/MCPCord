@@ -15,6 +15,8 @@ from .reader import ReaderError, bounded_list, integer, obj, snowflake, strict_j
 KEYCHAIN_SERVICE = "local.codex.discord-export-reader"
 KEYCHAIN_ACCOUNT = "personal-discord-readonly"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+# Discord's rate-limit headers and 429s set the real pace; this only stops bursts.
+MIN_REQUEST_SPACING = 0.05
 
 
 class LiveError(ReaderError):
@@ -33,7 +35,18 @@ def keychain_credential():
 
 
 class HTTPSGetTransport:
-    """Fixed HTTPS origin, no redirects/proxy support, no arbitrary methods/URLs."""
+    """Fixed HTTPS origin, no redirects/proxy support, no arbitrary methods/URLs.
+
+    One keep-alive connection is reused across requests, so only the first pays the TLS handshake.
+    """
+
+    def __init__(self):
+        self.connection = None
+
+    def close(self):
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
 
     def send(self, path, params, authorization, timeout):
         numeric = r"[1-9][0-9]{0,19}"
@@ -76,23 +89,35 @@ class HTTPSGetTransport:
         url = "/api/v10" + path
         if params:
             url += "?" + urlencode(params)
-        connection = http.client.HTTPSConnection("discord.com", timeout=timeout, context=ssl.create_default_context())
-        try:
-            connection.request("GET", url, headers={
-                "Authorization": authorization,
-                "User-Agent": "MCPCord/0.3 (local read-only client)",
-                "Accept": "application/json", "Accept-Encoding": "identity",
-            })
-            response = connection.getresponse()
-            body = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(body) > MAX_RESPONSE_BYTES:
-                raise LiveError("response_limit", "Response exceeds the local size limit.")
-            return response.status, {key.lower(): value for key, value in response.getheaders()}, body
-        except (OSError, http.client.HTTPException):
-            # Never forward network exceptions, response bodies, or authorization headers.
-            raise LiveError("network_error", "Discord could not be reached; no fresh result is available.") from None
-        finally:
-            connection.close()
+        # A reused connection the server already closed fails at once; retry that GET on a fresh one.
+        for reused in ((True, False) if self.connection is not None else (False,)):
+            if not reused:
+                self.close()
+                self.connection = http.client.HTTPSConnection("discord.com", timeout=timeout, context=ssl.create_default_context())
+            connection = self.connection
+            connection.timeout = timeout
+            if connection.sock is not None:
+                connection.sock.settimeout(timeout)
+            try:
+                connection.request("GET", url, headers={
+                    "Authorization": authorization,
+                    "User-Agent": "MCPCord/0.4 (local read-only client)",
+                    "Accept": "application/json", "Accept-Encoding": "identity",
+                })
+                response = connection.getresponse()
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(body) > MAX_RESPONSE_BYTES:
+                    self.close()
+                    raise LiveError("response_limit", "Response exceeds the local size limit.")
+                if response.will_close:
+                    self.close()
+                return response.status, {key.lower(): value for key, value in response.getheaders()}, body
+            except (OSError, http.client.HTTPException):
+                self.close()
+                if reused:
+                    continue
+                # Never forward network exceptions, response bodies, or authorization headers.
+                raise LiveError("network_error", "Discord could not be reached; no fresh result is available.") from None
 
 
 def seconds(value):
@@ -175,7 +200,7 @@ class ReadOnlyDiscordClient:
                     raise
                 self.cooldown_until = self.monotonic() + 2**attempt + self.jitter()
                 continue
-            self.cooldown_until = max(self.cooldown_until, self.monotonic() + 1.0)
+            self.cooldown_until = max(self.cooldown_until, self.monotonic() + MIN_REQUEST_SPACING)
             if headers.get("x-ratelimit-remaining") == "0":
                 reset = seconds(headers.get("x-ratelimit-reset-after"))
                 if reset is not None:
