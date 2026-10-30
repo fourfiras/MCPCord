@@ -20,11 +20,13 @@ class HistoryMixin(LiveReader):
             raise ReaderError("Choose exactly one discovered guild or explicit channel list, and a boolean all_history opt-in.")
         if guild_id is not None:
             snowflake(guild_id)
+            self.ensure_discovered(guild_id=guild_id)
             if guild_id not in self.guilds:
                 raise ReaderError("Discover this guild and its readable channels first.")
             ids = [cid for cid, c in self.channels.items() if c["guild_id"] == guild_id]
         else:
             ids = sorted({snowflake(cid) for cid in bounded_list(channel_ids, 1000)}, key=int)
+            self.ensure_discovered(ids)
         if not ids or len(ids) > 1000 or any(cid not in self.channels for cid in ids):
             raise ReaderError("Select 1 to 1000 discovered message channels. Forum/media containers are not message channels.")
         if all_history:
@@ -66,6 +68,7 @@ class HistoryMixin(LiveReader):
         if job.get("retry_at") and as_time(job["retry_at"]) > self.now():
             return live_envelope(dict(job, continuation_blocked="Stored retry cooldown is still active."))
         pending_channels = [c for c in job["channels"] if c["state"] in ("pending", "running")]
+        self.ensure_discovered([c["channel_id"] for c in pending_channels])
         if any(c["channel_id"] not in self.channels for c in pending_channels):
             return live_envelope(dict(job, continuation_blocked="Rediscover the pending channels/threads in this session before resuming; cached IDs do not grant access."))
         self.client.begin_refresh(self.scope["max_requests_per_refresh"])

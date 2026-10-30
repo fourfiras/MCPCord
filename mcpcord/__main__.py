@@ -91,7 +91,8 @@ def main():
             if validated["mode"] == "discover_accessible":
                 if not args.discover_accessible:
                     raise ReaderError("Account-wide discovery requires the explicit --discover-accessible activation flag.")
-                reader = DiscoveryReader(scope)
+                from .attachments import cache_root
+                reader = DiscoveryReader(scope, hints_path=str(cache_root().parent / "channel-hints.json"))
             else:
                 reader = LiveReader(scope)
             if args.history_store or args.enable_content_cache:

@@ -1,6 +1,8 @@
 """Lazy metadata discovery; never fetches message history while listing channels."""
 
 import base64
+import json
+import os
 import secrets
 
 from .live import LiveReader, live_envelope
@@ -57,15 +59,90 @@ def can_read_channel(guild, channel, user_id, role_ids):
 class DiscoveryReader(SearchMixin, HistoryMixin, LiveReader):
     discovers_accessible = True
 
-    def __init__(self, scope, **kwargs):
+    def __init__(self, scope, hints_path=None, **kwargs):
         super().__init__(scope, **kwargs)
         if self.scope["mode"] != "discover_accessible":
             raise ReaderError("DiscoveryReader requires discover_accessible scope.")
+        # Channel ID -> guild ID ("@me" for DMs) seen by earlier processes. IDs only, never content;
+        # a hint only picks which guild to rediscover first, and access is always re-checked live.
+        self.hints_path = hints_path
         self.guilds = {}
         self.identity = None
         self.metadata_snapshots = {}
         self.thread_parents = {}
         self.thread_cursors = {}
+
+    def _load_hints(self):
+        if not self.hints_path:
+            return {}
+        try:
+            data = json.loads(open(self.hints_path, encoding="utf-8").read())
+        except (OSError, ValueError):
+            return {}
+        return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(data, dict) else {}
+
+    def _save_hints(self, target, channel_ids):
+        if not self.hints_path:
+            return
+        hints = self._load_hints()
+        hints = {cid: g for cid, g in hints.items() if g != target}
+        hints.update({cid: target for cid in channel_ids})
+        try:
+            os.makedirs(os.path.dirname(self.hints_path), exist_ok=True)
+            tmp = self.hints_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as out:
+                json.dump(hints, out)
+            os.replace(tmp, self.hints_path)
+        except OSError:
+            pass
+
+    def _ensure_guilds(self):
+        after = None
+        while not self.guilds or after:
+            page = self.list_guilds(after, 200)
+            if page["is_error"]:
+                return
+            after = page["data"]["next_after"]
+            if not after:
+                return
+
+    def ensure_discovered(self, channel_ids=(), guild_id=None):
+        """A fresh process knows nothing yet: discover what a call names instead of failing it."""
+        if guild_id is not None:
+            if guild_id not in self.guilds:
+                self._ensure_guilds()
+            if guild_id in self.guilds and not any(c["guild_id"] == guild_id for c in self.channels.values()):
+                self.list_channels(guild_id)
+        missing = {snowflake(cid) for cid in channel_ids} - set(self.channels)
+        if not missing:
+            return
+        if not self.guilds:
+            self._ensure_guilds()
+        scanned = set()
+        hints = self._load_hints()
+        hinted = []
+        for cid in sorted(missing, key=int):
+            if cid in hints:
+                hinted.append(hints[cid])
+                continue
+            # Ask Discord which guild the channel is in, so one guild is scanned instead of all.
+            try:
+                self.client.begin_refresh(2)
+                info = obj(self.client.channel_info(cid, self.monotonic() + 10))
+                hinted.append("@me" if info.get("type") in (1, 3) else snowflake(info.get("guild_id")))
+            except ReaderError:
+                pass
+        for target in [*dict.fromkeys(hinted), "@me", *sorted(self.guilds, key=int)]:
+            if not missing - set(self.channels):
+                return
+            if target in scanned or (target != "@me" and target not in self.guilds):
+                continue
+            scanned.add(target)
+            self.list_channels(None if target == "@me" else target)
+
+    def _ids(self, values):
+        self.ensure_discovered(bounded_list(values, 100))
+        return super()._ids(values)
 
     def list_guilds(self, after=None, limit=50):
         integer(limit, 1, 200)
@@ -172,7 +249,9 @@ class DiscoveryReader(SearchMixin, HistoryMixin, LiveReader):
         if guild_id is not None:
             snowflake(guild_id)
             if guild_id not in self.guilds:
-                raise ReaderError("Call list_guilds to discover this membership first.")
+                self._ensure_guilds()
+            if guild_id not in self.guilds:
+                raise ReaderError("This account is not a member of that guild.")
         target = guild_id or "@me"
         for sid, snapshot in list(self.metadata_snapshots.items()):
             if self.monotonic() - snapshot["created"] > 600:
@@ -201,6 +280,7 @@ class DiscoveryReader(SearchMixin, HistoryMixin, LiveReader):
                 for cid in old:
                     del self.channels[cid]
                 self.channels.update(readable)
+                self._save_hints(target, readable)
                 if guild_id:
                     old_parents = {cid for cid, c in self.thread_parents.items() if c["guild_id"] == guild_id}
                     new_parents = {cid: c for cid, c in found.items() if c.get("threads_available")}

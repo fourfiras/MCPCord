@@ -20,14 +20,20 @@ class SearchMixin(LiveReader):
             raise ReaderError("Select exactly one discovered server or conversation; page other scopes explicitly.")
         target = snowflake(guild_id or channel_id)
         if guild_id and guild_id not in self.guilds:
+            self._ensure_guilds()
+        if channel_id:
+            self.ensure_discovered([channel_id])
+        if guild_id and guild_id not in self.guilds:
             raise ReaderError("Discover the requested guild before searching it.")
         if channel_id and channel_id not in self.channels:
             raise ReaderError("Discover the requested conversation before searching it.")
         if relationship not in ("author", "mention", "reply"):
             raise ReaderError("Select author, mention or reply matching.")
         since, until = timestamp(since), timestamp(until)
-        if since >= until or as_time(until) > self.now() or as_time(since).year < 2015:
-            raise ReaderError("Choose a Discord-era interval with since < until <= now.")
+        if as_time(until) > self.now():
+            until = timestamp(self.now().isoformat())
+        if since >= until or as_time(since).year < 2015:
+            raise ReaderError("Choose a Discord-era interval with since < until.")
         signature = canonical([user_id, since, until, relationship, guild_id, channel_id])
         if not hasattr(self, "search_cursors"):
             self.search_cursors: dict[str, dict] = {}

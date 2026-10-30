@@ -1,6 +1,8 @@
 import json
+import os
+import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from mcpcord.discovery import ADMIN, CONNECT, HISTORY, VIEW, DiscoveryReader, can_read_channel
 from mcpcord.live_transport import HTTPSGetTransport, LiveError, ReadOnlyDiscordClient
@@ -79,9 +81,47 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(self.reader.guilds, {})
 
     def test_unknown_guild_cannot_trigger_arbitrary_member_or_channel_request(self):
+        self.client.guilds.return_value = []
         with self.assertRaises(ReaderError):
             self.reader.list_channels(guild_id=GID)
         self.client.guild_channels.assert_not_called()
+        self.client.own_guild_member.assert_not_called()
+
+    def test_fresh_reader_discovers_a_named_channel_before_reading(self):
+        self.client.messages.return_value = []
+        result = self.reader.read_messages([CID], "2026-10-09T00:00:00Z", "2026-10-10T00:00:00Z")
+        self.assertFalse(result["is_error"])
+        self.client.guilds.assert_called()
+        self.client.guild_channels.assert_called_once_with(GID, ANY)
+
+    def test_unreadable_channel_still_fails_after_discovery(self):
+        with self.assertRaises(ReaderError):
+            self.reader.read_messages(["999999999999999999"], "2026-10-09T00:00:00Z", "2026-10-10T00:00:00Z")
+        self.client.messages.assert_not_called()
+
+    def test_without_hints_channel_info_picks_the_one_guild_to_scan(self):
+        other = "333333333333333333"
+        self.client.guilds.return_value = [guild(other), guild()]
+        self.client.channel_info.return_value = {"id": CID, "type": 0, "guild_id": GID}
+        self.client.messages.return_value = []
+        self.reader.read_messages([CID], "2026-10-09T00:00:00Z", "2026-10-10T00:00:00Z")
+        self.assertEqual([c.args[0] for c in self.client.guild_channels.call_args_list], [GID])
+        self.client.direct_channels.assert_not_called()
+
+    def test_hints_send_discovery_straight_to_the_remembered_guild(self):
+        other = "333333333333333333"
+        self.client.guilds.return_value = [guild(other), guild()]
+        with tempfile.TemporaryDirectory() as tmp:
+            hints = os.path.join(tmp, "hints.json")
+            with open(hints, "w") as out:
+                json.dump({CID: GID}, out)
+            reader = DiscoveryReader(scope(), hints_path=hints, client=self.client, now=lambda: NOW, monotonic=self.clock.mono)
+            self.client.messages.return_value = []
+            reader.read_messages([CID], "2026-10-09T00:00:00Z", "2026-10-10T00:00:00Z")
+            self.assertEqual([c.args[0] for c in self.client.guild_channels.call_args_list], [GID])
+            self.client.direct_channels.assert_not_called()
+            with open(hints) as saved:
+                self.assertEqual(json.load(saved)[CID], GID)
 
     def test_permission_filtered_channels_and_no_account_fields_exposed(self):
         self.reader.list_guilds()

@@ -80,7 +80,8 @@ class HTTPSGetTransport:
                 raise LiveError("scope_error", "Unsupported search author type.")
         elif path == "/users/@me/guilds":
             permitted_params = {"after", "limit"}
-        elif path in {"/users/@me", "/users/@me/channels"} or re.fullmatch(rf"/guilds/{numeric}/(?:channels|members/{numeric})", path):
+        elif (path in {"/users/@me", "/users/@me/channels"} or re.fullmatch(rf"/channels/{numeric}", path)
+              or re.fullmatch(rf"/guilds/{numeric}/(?:channels|members/{numeric})", path)):
             permitted_params = set()
         else:
             raise LiveError("scope_error", "HTTP route is outside the read-only surface.")
@@ -283,6 +284,12 @@ class ReadOnlyDiscordClient:
     def direct_channels(self, deadline):
         self._require_discovery()
         return self._request("/users/@me/channels", {}, deadline, "dm-list")
+
+    def channel_info(self, channel_id, deadline):
+        """Channel metadata (which guild it is in); no messages. Discord checks access."""
+        self._require_discovery()
+        channel_id = snowflake(channel_id)
+        return self._request(f"/channels/{channel_id}", {}, deadline, "channel-info:" + channel_id)
 
     def current_user(self, deadline):
         self._require_discovery()

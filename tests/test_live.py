@@ -189,6 +189,8 @@ class TransportTests(unittest.TestCase):
             for path in ("https://example.invalid", "/users/@me/connections", f"/channels/{CID}/messages/../../users"):
                 with self.assertRaises(LiveError):
                     HTTPSGetTransport().send(path, {}, SYNTHETIC, 5)
+            with self.assertRaises(LiveError):
+                HTTPSGetTransport().send(f"/channels/{CID}", {"limit": 1}, SYNTHETIC, 5)
             create.assert_not_called()
 
     def test_keychain_mock_uses_only_dedicated_item_and_never_echoes_errors(self):
