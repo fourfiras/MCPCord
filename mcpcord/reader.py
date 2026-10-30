@@ -157,6 +157,24 @@ def normalize_message(raw, channel, exported_at, source_hash):
         if images:
             normalized["images"] = images
         embeds.append(normalized)
+    reactions = []
+    for reaction in bounded_list(raw.get("reactions", []), 100):
+        reaction = obj(reaction)
+        emoji = obj(reaction.get("emoji"))
+        # Unicode emoji have no id; a deleted custom emoji has no name
+        item = {"emoji": text_field(emoji.get("name"), 256, nullable=True),
+                "emoji_id": snowflake(emoji["id"]) if emoji.get("id") else None,
+                "count": integer(reaction.get("count", 0), 0, 2**31 - 1)}
+        if reaction.get("me") is not None:
+            if type(reaction["me"]) is not bool:
+                raise ReaderError("Reaction me must be boolean.")
+            item["me"] = reaction["me"]
+        if reaction.get("users") is not None:
+            item["users"] = [{"id": snowflake(obj(user).get("id")),
+                              "name": text_field(user.get("name"), 256),
+                              "nickname": text_field(user.get("nickname"), 256, nullable=True)}
+                             for user in bounded_list(reaction["users"], 100)]
+        reactions.append(item)
     reference = None
     if raw.get("reference") is not None:
         ref = obj(raw["reference"])
@@ -174,11 +192,11 @@ def normalize_message(raw, channel, exported_at, source_hash):
                    "name": text_field(author.get("name"), 256),
                    "nickname": text_field(author.get("nickname"), 256, nullable=True)},
         "content": text_field(raw.get("content", "")),
-        "attachments": attachments, "embeds": embeds, "reference": reference,
+        "attachments": attachments, "embeds": embeds, "reactions": reactions, "reference": reference,
         "forwarded_content": forwarded, "is_pinned": pinned,
         "source_url": f"https://discord.com/channels/{channel['guild_id']}/{channel['id']}/{mid}",
         "source_export_sha256": source_hash, "observed_at": exported_at,
-        "limitations": "Attachment and embed-image bodies are not inlined; read them with read_attachment (index counts attachments, then embed images). Reactions and stickers are not indexed.",
+        "limitations": "Attachment and embed-image bodies are not inlined; read them with read_attachment (index counts attachments, then embed images). Stickers are not indexed.",
     }
     message["author_kind"] = "webhook" if raw.get("webhookId") else ("bot" if author.get("isBot") else "user")
     message["mention_ids"] = sorted({snowflake(obj(m).get("id")) for m in bounded_list(raw.get("mentions", []), 1000)}, key=int)
@@ -354,6 +372,8 @@ class ExportIndex:
                                  "attachment_count": len(m["attachments"]), "embed_count": len(m["embeds"]),
                                  "attachments": [{k: a[k] for k in ("index", "filename", "content_type", "size_bytes") if k in a}
                                                  for a in m["attachments"]],
+                                 "reactions": [{k: v for k, v in r.items() if k != "users"}
+                                               for r in m.get("reactions", [])],
                                  "has_forward": m["forwarded_content"] is not None})
         return {"filters": filters, "total_matching": len(rows), "messages": previews,
                 "next_cursor": next_cursor, "more_messages": next_cursor is not None}

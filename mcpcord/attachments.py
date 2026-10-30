@@ -90,7 +90,7 @@ class HTTPSFileFetcher:
         connection = http.client.HTTPSConnection(parts.hostname, timeout=timeout, context=ssl.create_default_context())
         tmp = None
         try:
-            connection.request("GET", target, headers={"User-Agent": "MCPCord/0.4 (local read-only client)",
+            connection.request("GET", target, headers={"User-Agent": "MCPCord/0.5 (local read-only client)",
                                                        "Accept-Encoding": "identity"})
             response = connection.getresponse()
             if response.status != 200:

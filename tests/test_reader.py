@@ -180,6 +180,20 @@ class ReaderTests(unittest.TestCase):
             with self.assertRaises(ReaderError):
                 load(self.index, bad)
 
+    def test_reactions_keep_who_reacted_out_of_previews(self):
+        index, data = ExportIndex(), fixture()
+        row = data["messages"][0]
+        row["reactions"] = [{"emoji": {"id": "", "name": "\U0001f44d", "code": "thumbsup", "isAnimated": False},
+                             "count": 1, "users": [{"id": "555555555555555555", "name": "Ari", "nickname": "Ari", "isBot": False}]}]
+        load(index, data)
+        channel = data["channel"]["id"]
+        full = index.get_message(channel, row["id"])["data"]["reactions"]
+        self.assertEqual(full, [{"emoji": "\U0001f44d", "emoji_id": None, "count": 1,
+                                 "users": [{"id": "555555555555555555", "name": "Ari", "nickname": "Ari"}]}])
+        page = index.read_messages([channel], START, END, limit=50)["data"]["messages"]
+        self.assertEqual(next(m for m in page if m["id"] == row["id"])["reactions"],
+                         [{"emoji": "\U0001f44d", "emoji_id": None, "count": 1}])
+
     def test_prompt_injection_is_inert_data(self):
         load(self.index, fixture("dm.json"))
         with patch("os.system", side_effect=AssertionError("execution forbidden")), patch("socket.socket", side_effect=AssertionError("network forbidden")):

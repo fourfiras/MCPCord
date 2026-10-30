@@ -170,6 +170,29 @@ class TransportTests(unittest.TestCase):
                     HTTPSGetTransport().send(f"/channels/{CID}/messages", params, SYNTHETIC, 5)
             create.assert_not_called()
 
+    def test_reaction_lookup_is_scoped_and_encodes_the_emoji(self):
+        client, transport, _, _ = self.client([(200, {}, []), (200, {}, [])])
+        mid = message()["id"]
+        client.reactions(CID, mid, "\U0001f44d", False, 20)
+        client.reactions(CID, mid, "InabaSit:1213405064002150481", True, 20)
+        self.assertEqual(transport.calls[0][:2], (f"/channels/{CID}/messages/{mid}/reactions/%F0%9F%91%8D", {"limit": 25, "type": 0}))
+        self.assertEqual(transport.calls[1][:2], (f"/channels/{CID}/messages/{mid}/reactions/InabaSit%3A1213405064002150481", {"limit": 25, "type": 1}))
+        with self.assertRaises(LiveError):
+            client.reactions(DM, mid, "\U0001f44d", False, 20)
+        self.assertEqual(len(transport.calls), 2)
+
+    def test_reaction_route_rejects_other_queries_before_connection(self):
+        base = f"/channels/{CID}/messages/{CID}/reactions/"
+        with patch("http.client.HTTPSConnection") as create:
+            for path, params in ((base + "%F0%9F%91%8D", {"limit": 101, "type": 0}),
+                                 (base + "%F0%9F%91%8D", {"limit": 25, "type": 2}),
+                                 (base + "%F0%9F%91%8D", {"limit": 25, "type": 0, "after": "1"}),
+                                 (base + "a/b", {"limit": 25, "type": 0}),
+                                 (base + "..", {"limit": 25, "type": 0})):
+                with self.subTest(path=path, params=params), self.assertRaises(ReaderError):
+                    HTTPSGetTransport().send(path, params, SYNTHETIC, 5)
+            create.assert_not_called()
+
     def test_https_transport_hardcodes_get_and_discord_origin(self):
         response = Mock(status=200)
         response.read.return_value = b"[]"
@@ -330,6 +353,43 @@ class BackendTests(unittest.TestCase):
         with self.assertRaises(ReaderError):
             backend.get_message(CID, boundary_id("2026-10-11T00:00:00Z"))
         self.assertEqual(client.message.call_count, 2)
+
+    def test_reactions_are_listed_and_get_message_names_who_reacted(self):
+        row = message()
+        row["reactions"] = [
+            {"emoji": {"id": None, "name": "\U0001f44d"}, "count": 1, "count_details": {"burst": 0, "normal": 1}, "me": False, "me_burst": False},
+            {"emoji": {"id": "1213405064002150481", "name": "InabaSit"}, "count": 2, "count_details": {"burst": 1, "normal": 1}, "me": True, "me_burst": False},
+        ]
+        backend, client = self.backend([[row], []])
+        preview = backend.read_messages([CID], SINCE, UNTIL)["data"]["messages"][0]["reactions"]
+        self.assertEqual(preview, [{"emoji": "\U0001f44d", "emoji_id": None, "count": 1, "me": False},
+                                   {"emoji": "InabaSit", "emoji_id": "1213405064002150481", "count": 2, "me": True}])
+        other = {"id": "666666666666666666", "username": "bo", "global_name": "Bo"}
+        mine = {"id": "777777777777777777", "username": "cy", "global_name": None}
+        client.message.return_value = row
+        client.reactions.side_effect = [[other], [mine], [mine, other]]
+        reactions = backend.get_message(CID, row["id"])["data"]["message"]["reactions"]
+        self.assertEqual(reactions[0]["users"], [{"id": other["id"], "name": "bo", "nickname": "Bo"}])
+        self.assertEqual([user["id"] for user in reactions[1]["users"]], [mine["id"], other["id"]])
+        self.assertEqual([call.args[2:4] for call in client.reactions.call_args_list],
+                         [("\U0001f44d", False), ("InabaSit:1213405064002150481", False), ("InabaSit:1213405064002150481", True)])
+
+    def test_reaction_lookup_failures_keep_the_message(self):
+        row = message()
+        row["reactions"] = [{"emoji": {"id": None, "name": name}, "count": 1, "me": False} for name in ("\U0001f44d", "\U0001f525")]
+        backend, client = self.backend([])
+        client.message.return_value = row
+        client.reactions.side_effect = LiveError("access_denied", "Discord denied access.")
+        data = backend.get_message(CID, row["id"])["data"]
+        self.assertFalse(any("users" in reaction for reaction in data["message"]["reactions"]))
+        self.assertEqual(data["reaction_users_incomplete"]["code"], "access_denied")
+        backend.scope["max_requests_per_refresh"] = 1
+        client.reactions.side_effect = [[{"id": "666666666666666666", "username": "bo", "global_name": None}]]
+        data = backend.get_message(CID, row["id"])["data"]
+        self.assertEqual(["users" in reaction for reaction in data["message"]["reactions"]], [True, False])
+        self.assertEqual(data["reaction_users_incomplete"]["code"], "request_limit")
+        client.reactions.side_effect = LiveError("authentication_failed", "Discord rejected authentication.")
+        self.assertTrue(backend.get_message(CID, row["id"])["is_error"])
 
     def test_live_mcp_error_and_annotations(self):
         backend, client = self.backend([LiveError("network_error", "No fresh result")])

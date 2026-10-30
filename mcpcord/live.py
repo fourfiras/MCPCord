@@ -103,6 +103,15 @@ def api_to_export(raw, channel):
     attachments = [{"fileName": obj(a).get("filename"), "fileSizeBytes": a.get("size", 0),
                     "contentType": a.get("content_type"), "width": a.get("width"), "height": a.get("height")}
                    for a in bounded_list(raw.get("attachments", []), 100)]
+    reactions = []
+    for reaction in bounded_list(raw.get("reactions", []), 100):
+        reaction = obj(reaction)
+        emoji = obj(reaction.get("emoji"))
+        reactions.append({"emoji": {"id": snowflake(emoji["id"]) if emoji.get("id") else None,
+                                    "name": text_field(emoji.get("name"), 256, nullable=True)},
+                          "count": integer(reaction.get("count", 0), 0, 2**31 - 1),
+                          "me": bool(reaction.get("me") or reaction.get("me_burst")),
+                          "burstCount": integer(obj(reaction.get("count_details") or {}).get("burst", 0), 0, 2**31 - 1)})
     result = {"id": snowflake(raw.get("id")), "type": str(integer(raw.get("type", 0), 0, 10000)),
               "timestamp": raw.get("timestamp"), "timestampEdited": raw.get("edited_timestamp"),
               "isPinned": raw.get("pinned", False), "content": raw.get("content", ""),
@@ -111,7 +120,7 @@ def api_to_export(raw, channel):
               "mentions": [{"id": snowflake(obj(m).get("id"))} for m in bounded_list(raw.get("mentions", []), 1000)],
               "author": {"id": author.get("id"), "name": author.get("username"),
                          "nickname": author.get("global_name"), "isBot": author.get("bot", False)},
-              "attachments": attachments, "embeds": raw.get("embeds", [])}
+              "attachments": attachments, "embeds": raw.get("embeds", []), "reactions": reactions}
     if raw.get("message_reference") is not None:
         ref = obj(raw["message_reference"])
         result["reference"] = {"messageId": ref.get("message_id"), "channelId": ref.get("channel_id"),
@@ -290,15 +299,48 @@ class LiveReader:
             if obj(raw).get("id") != message_id:
                 raise LiveError("invalid_response", "Returned message ID differs from the request.")
             converted = api_to_export(raw, self.channels[channel_id])
+            reaction_users = self._reaction_users(channel_id, message_id, converted["reactions"])
             observed = timestamp(self.now().isoformat())
             message = normalize_message(converted, self.channels[channel_id], observed, "live-get")
             message.pop("source_export_sha256")
             message["source_type"] = "discord_api_get"
         except ReaderError as exc:
             return self._failure(exc, ids, attempted)
-        return live_envelope({"message": message,
-                              "freshness": {"state": "refreshed", "refreshed_at": observed,
-                                            "coverage": "One message only; channel history was not refreshed."}})
+        data = {"message": message,
+                "freshness": {"state": "refreshed", "refreshed_at": observed,
+                              "coverage": "One message only; channel history was not refreshed."}}
+        if reaction_users:
+            data["reaction_users_incomplete"] = reaction_users
+        return live_envelope(data)
+
+    def _reaction_users(self, channel_id, message_id, reactions):
+        """Names who reacted, up to 25 people per emoji, within one refresh's request budget."""
+        lookups = [(reaction, burst) for reaction in reactions for burst in (False, True)
+                   if reaction["emoji"]["name"]
+                   and (reaction["burstCount"] if burst else reaction["count"] - reaction["burstCount"]) > 0]
+        budget = self.scope["max_requests_per_refresh"]
+        if not lookups:
+            return None
+        self.client.begin_refresh(budget)
+        deadline = self.monotonic() + 20
+        try:
+            for reaction, burst in lookups[:budget]:
+                emoji = reaction["emoji"]
+                key = f"{emoji['name']}:{emoji['id']}" if emoji["id"] else emoji["name"]
+                rows = bounded_list(self.client.reactions(channel_id, message_id, key, burst, deadline), 100)
+                users = reaction.setdefault("users", [])
+                for user in rows:
+                    user = obj(user)
+                    if all(known["id"] != user.get("id") for known in users):
+                        users.append({"id": user.get("id"), "name": user.get("username"),
+                                      "nickname": user.get("global_name")})
+        except LiveError as exc:
+            if exc.code == "authentication_failed":
+                raise
+            return {"code": exc.code, "message": str(exc)}
+        if len(lookups) > budget:
+            return {"code": "request_limit", "message": f"Only the first {budget} reaction lookups ran; later emoji have no users list."}
+        return None
 
     def read_attachment(self, channel_id, message_id, index=0):
         """Fetch one file of a message: attachments first, then Discord-proxied embed images."""

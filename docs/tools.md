@@ -5,8 +5,8 @@
 | `list_guilds` | One membership page; follow `next_after`. |
 | `list_channels` | Current DMs, or readable channels/containers in a discovered guild. |
 | `list_threads` | One active/archived metadata page in a readable parent. |
-| `read_messages` | Fresh date/channel window; optional literal text search. |
-| `get_message` | One exact fresh message of any age, using the personal-account-compatible listing endpoint. |
+| `read_messages` | Fresh date/channel window with reaction counts; optional literal text search. |
+| `get_message` | One exact fresh message of any age, using the personal-account-compatible listing endpoint, with who reacted. |
 | `digest_context` | Fresh, cited evidence for an assistant-written digest. |
 | `search_user_messages` | Discord-index search by exact author, mention or reply target ID. |
 | `find_user_conversations` | Current DM membership by exact recipient ID. |

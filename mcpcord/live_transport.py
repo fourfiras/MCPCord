@@ -8,7 +8,7 @@ import re
 import secrets
 import ssl
 import time
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from .reader import ReaderError, bounded_list, integer, obj, snowflake, strict_json
 
@@ -60,6 +60,11 @@ class HTTPSGetTransport:
             integer(params["limit"], 1, 100)
             if key in ("after", "around") and (params["limit"] != 1 or (key == "after" and params[key] != "0")):
                 raise LiveError("scope_error", "Only exact-message lookup or earliest-message verification is allowed.")
+        elif re.fullmatch(rf"/channels/{numeric}/messages/{numeric}/reactions/[A-Za-z0-9%_~-]{{1,512}}", path):
+            permitted_params = {"limit", "type"}
+            integer(params.get("limit"), 1, 100)
+            if params.get("type") not in (0, 1):
+                raise LiveError("scope_error", "Reaction lookup query is outside the read-only surface.")
         elif re.fullmatch(rf"/channels/{numeric}/threads/search", path):
             permitted_params = {"sort_by", "sort_order", "archived", "offset"}
             if (set(params) != permitted_params or params.get("sort_by") != "last_message_time"
@@ -102,7 +107,7 @@ class HTTPSGetTransport:
             try:
                 connection.request("GET", url, headers={
                     "Authorization": authorization,
-                    "User-Agent": "MCPCord/0.4 (local read-only client)",
+                    "User-Agent": "MCPCord/0.5 (local read-only client)",
                     "Accept": "application/json", "Accept-Encoding": "identity",
                 })
                 response = connection.getresponse()
@@ -266,6 +271,18 @@ class ReadOnlyDiscordClient:
             if obj(row).get("id") == message_id:
                 return row
         raise LiveError("not_found", "The exact message was not returned; a neighbouring message is not a match.")
+
+    def reactions(self, channel_id, message_id, emoji, burst, deadline):
+        """Who reacted with one emoji: the unicode character, or name:id for a custom one."""
+        channel_id = snowflake(channel_id)
+        if channel_id not in self.allowed:
+            raise LiveError("scope_error", "Channel is not in the operator-approved allowlist.")
+        if channel_id in self.blocked:
+            raise LiveError("access_denied", "Channel access failed earlier; restart only after resolving access.")
+        # Dots are encoded too, so the segment can never be . or ..
+        segment = quote(emoji, safe="").replace(".", "%2E")
+        path = f"/channels/{channel_id}/messages/{snowflake(message_id)}/reactions/{segment}"
+        return self._request(path, {"limit": 25, "type": 1 if burst else 0}, deadline)
 
     def first_message(self, channel_id, deadline):
         return self._get(channel_id, deadline=deadline, first=True)
